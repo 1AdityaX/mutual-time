@@ -1,12 +1,13 @@
 <script lang="ts">
 	import '../app.css';
 	import { ModeWatcher, toggleMode } from 'mode-watcher';
-	import { Button } from '$lib/components/ui/button/index.js';
+	import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
 	import Sun from '@lucide/svelte/icons/sun';
 	import Moon from '@lucide/svelte/icons/moon';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import { browser } from '$app/environment';
 	import InviteCodeDropdown from '$lib/components/InviteCodeDropdown.svelte';
+	import { cn } from '$lib/utils.js';
 
 	let { children, data } = $props();
 </script>
@@ -66,7 +67,7 @@
 					{#if data.user}
 						<DropdownMenu.Root>
 							<DropdownMenu.Trigger>
-								<Button variant="secondary">
+								<div class={cn(buttonVariants({ variant: 'secondary' }), 'flex items-center')}>
 									{data.user.username}
 									<svg class="ml-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"
 										><path
@@ -76,7 +77,7 @@
 											d="M19 9l-7 7-7-7"
 										></path></svg
 									>
-								</Button>
+								</div>
 							</DropdownMenu.Trigger>
 							<DropdownMenu.Content>
 								<DropdownMenu.Label>My Account</DropdownMenu.Label>

@@ -94,7 +94,7 @@
 		return map;
 	});
 
-	// THE CORE LOGIC: Calculate mutual free time
+	// THE CORE LOGIC: Calculate best possible meeting times
 	const mutualSlots = $derived(() => {
 		const participantCount = Object.keys(event.participants).length;
 
@@ -107,7 +107,7 @@
 			return singleParticipant || [];
 		}
 
-		// Calculate mutual availability for multiple participants
+		// Calculate availability counts for each time slot
 		const availabilityCounts = new Map<string, number>();
 		for (const name in event.participants) {
 			event.participants[name].forEach((slot) => {
@@ -121,17 +121,147 @@
 			});
 		}
 
-		const mutualISOs = [...availabilityCounts.entries()]
-			.filter(([, count]) => count === participantCount)
+		// Find the maximum number of participants available at any time
+		const maxParticipants = Math.max(...availabilityCounts.values(), 0);
+
+		// If no one is available, return empty array
+		if (maxParticipants === 0) return [];
+
+		// Find all time slots where the maximum number of participants are available
+		const bestTimeISOs = [...availabilityCounts.entries()]
+			.filter(([, count]) => count === maxParticipants)
 			.map(([iso]) => iso)
 			.sort();
 
 		// Group consecutive slots
-		return groupConsecutiveSlots(mutualISOs, timeInterval);
+		return groupConsecutiveSlots(bestTimeISOs, timeInterval);
+	});
+
+	// Calculate the maximum number of participants available for the best times
+	const maxParticipantsForBestTimes = $derived(() => {
+		const participantCount = Object.keys(event.participants).length;
+		if (participantCount === 0) return 0;
+		if (participantCount === 1) return 1;
+
+		// Calculate availability counts for each time slot
+		const availabilityCounts = new Map<string, number>();
+		for (const name in event.participants) {
+			event.participants[name].forEach((slot) => {
+				let current = parseISO(slot.start);
+				const end = parseISO(slot.end);
+				while (current < end) {
+					const iso = current.toISOString();
+					availabilityCounts.set(iso, (availabilityCounts.get(iso) || 0) + 1);
+					current = addMinutes(current, timeInterval);
+				}
+			});
+		}
+
+		return Math.max(...availabilityCounts.values(), 0);
 	});
 
 	// --- SIMPLIFIED SELECTION HANDLERS ---
 	function handleClick(slotTime: Date) {
+		toggleSlot(slotTime);
+	}
+
+	// Add keyboard navigation support
+	function handleKeydown(event: KeyboardEvent, slotTime: Date) {
+		if (!loggedInUser || !participantName) return;
+
+		switch (event.key) {
+			case 'Enter':
+			case ' ':
+				event.preventDefault();
+				toggleSlot(slotTime);
+				break;
+			case 'ArrowUp':
+			case 'ArrowDown':
+			case 'ArrowLeft':
+			case 'ArrowRight':
+				event.preventDefault();
+				navigateToAdjacentSlot(event.key, slotTime);
+				break;
+		}
+	}
+
+	// Navigate to adjacent slot for keyboard navigation
+	function navigateToAdjacentSlot(direction: string, currentSlot: Date) {
+		const currentIndex = selectedDates().findIndex(
+			(date) => format(date, 'yyyy-MM-dd') === format(currentSlot, 'yyyy-MM-dd')
+		);
+		const timeIndex = timeSlots.findIndex((time) => {
+			const hour = Math.floor((timeSlots.indexOf(time) * timeInterval) / 60);
+			const minute = (timeSlots.indexOf(time) * timeInterval) % 60;
+			const timeString = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+			return timeString === format(currentSlot, 'HH:mm');
+		});
+
+		// Handle edge cases
+		if (currentIndex === -1 || timeIndex === -1) return;
+
+		let newDateIndex = currentIndex;
+		let newTimeIndex = timeIndex;
+
+		switch (direction) {
+			case 'ArrowUp':
+				newTimeIndex = Math.max(0, timeIndex - 1);
+				break;
+			case 'ArrowDown':
+				newTimeIndex = Math.min(timeSlots.length - 1, timeIndex + 1);
+				break;
+			case 'ArrowLeft':
+				newDateIndex = Math.max(0, currentIndex - 1);
+				break;
+			case 'ArrowRight':
+				newDateIndex = Math.min(selectedDates().length - 1, currentIndex + 1);
+				break;
+		}
+
+		if (newDateIndex !== currentIndex || newTimeIndex !== timeIndex) {
+			const newDate = selectedDates()[newDateIndex];
+			const hour = Math.floor((newTimeIndex * timeInterval) / 60);
+			const minute = (newTimeIndex * timeInterval) % 60;
+			const timeString = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+			const newSlotDateTime = new Date(format(newDate, 'yyyy-MM-dd') + 'T' + timeString + ':00');
+
+			// Focus the new slot with a small delay to ensure DOM is updated
+			setTimeout(() => {
+				const newSlotElement = document.querySelector(
+					`[data-slot-id="${newSlotDateTime.toISOString()}"]`
+				) as HTMLElement;
+				if (newSlotElement) {
+					newSlotElement.focus();
+				}
+			}, 10);
+		}
+	}
+
+	// Add visual feedback for selection
+	function handleSlotInteraction(slotTime: Date, event: MouseEvent | KeyboardEvent) {
+		// Add a brief visual feedback
+		const slotElement = event.target as HTMLElement;
+		if (slotElement) {
+			// Add ripple effect for mouse clicks
+			if (event instanceof MouseEvent) {
+				const ripple = document.createElement('div');
+				ripple.className =
+					'absolute inset-0 bg-white/20 rounded-sm animate-ping pointer-events-none';
+				ripple.style.animationDuration = '300ms';
+				slotElement.appendChild(ripple);
+
+				setTimeout(() => {
+					ripple.remove();
+				}, 300);
+			}
+
+			// Add scale animation
+			slotElement.classList.add('scale-95');
+			setTimeout(() => {
+				slotElement.classList.remove('scale-95');
+			}, 150);
+		}
+
 		toggleSlot(slotTime);
 	}
 
@@ -305,33 +435,106 @@
 						{@const iso = slotDateTime.toISOString()}
 						{@const isMySelection = mySelectionMap().get(iso)}
 						{@const otherSelections = allParticipantsMap().get(iso)}
+
+						<!-- Hidden checkbox for proper semantics -->
+						{#if loggedInUser && participantName}
+							<input
+								type="checkbox"
+								class="sr-only"
+								checked={isMySelection}
+								onchange={() => toggleSlot(slotDateTime)}
+								aria-label={`Select time slot for ${format(day, 'EEEE')} at ${time}`}
+							/>
+						{/if}
+
 						<div
-							class="h-6 border-t border-r transition-colors duration-150 {isMySelection
-								? 'bg-primary/80'
-								: ''} {!isMySelection && otherSelections
-								? 'bg-opacity-20 bg-blue-400'
-								: ''} {loggedInUser && participantName
-								? 'hover:bg-primary/30 cursor-pointer'
+							class="relative h-6 transform border-t border-r transition-all duration-200 ease-in-out
+								{isMySelection
+								? 'bg-primary/90 border-primary/30 scale-[0.98] shadow-sm'
+								: 'bg-background hover:bg-accent/50 border-border hover:scale-[1.02]'} 
+								{!isMySelection && otherSelections ? 'bg-blue-100/50 dark:bg-blue-900/20' : ''} 
+								{loggedInUser && participantName
+								? 'focus:ring-primary/50 cursor-pointer focus:ring-2 focus:ring-offset-1 focus:outline-none active:scale-95'
 								: 'cursor-not-allowed opacity-60'}"
 							onclick={loggedInUser && participantName
-								? () => handleClick(slotDateTime)
+								? (event) => handleSlotInteraction(slotDateTime, event)
 								: undefined}
 							onkeydown={loggedInUser && participantName
-								? (e) => e.key === 'Enter' && handleClick(slotDateTime)
+								? (e) => handleKeydown(e, slotDateTime)
 								: undefined}
-							role={loggedInUser && participantName ? 'button' : 'presentation'}
+							role={loggedInUser && participantName ? 'checkbox' : 'presentation'}
+							aria-checked={loggedInUser && participantName ? isMySelection : undefined}
 							{...loggedInUser && participantName ? { tabindex: 0 } : {}}
+							data-slot-id={iso}
 							aria-label={loggedInUser && participantName
 								? `Select time slot for ${format(day, 'EEEE')} at ${time}`
 								: `Time slot for ${format(day, 'EEEE')} at ${time} (login required to select)`}
 						>
+							<!-- Checkbox indicator -->
+							{#if isMySelection}
+								<div
+									class="animate-in fade-in-0 zoom-in-50 absolute inset-0 flex items-center justify-center duration-200"
+								>
+									<svg
+										class="text-primary-foreground h-3 w-3 drop-shadow-sm"
+										fill="currentColor"
+										viewBox="0 0 20 20"
+										aria-hidden="true"
+									>
+										<path
+											fill-rule="evenodd"
+											d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+											clip-rule="evenodd"
+										/>
+									</svg>
+								</div>
+							{/if}
+
+							<!-- Hover indicator -->
+							{#if loggedInUser && participantName && !isMySelection}
+								<div
+									class="absolute inset-0 opacity-0 transition-opacity duration-150 hover:opacity-100"
+								>
+									<div
+										class="bg-primary/20 flex h-full w-full items-center justify-center rounded-sm"
+									>
+										<svg
+											class="text-primary/60 h-2.5 w-2.5"
+											fill="currentColor"
+											viewBox="0 0 20 20"
+											aria-hidden="true"
+										>
+											<path
+												fill-rule="evenodd"
+												d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+												clip-rule="evenodd"
+											/>
+										</svg>
+									</div>
+								</div>
+							{/if}
+
+							<!-- Others' selections indicator -->
 							{#if !isMySelection && otherSelections}
-								<div class="pointer-events-none h-full w-full opacity-30">
-									<!-- A visual hint for others' selections -->
+								<div class="pointer-events-none absolute inset-0 opacity-30">
 									{#each otherSelections as person (person)}
-										<div class="h-1/4 bg-amber-500"></div>
+										<div class="mx-0.5 h-1/4 rounded-sm bg-amber-500/60"></div>
 									{/each}
 								</div>
+							{/if}
+
+							<!-- Focus ring for keyboard navigation -->
+							{#if loggedInUser && participantName}
+								<div
+									class="focus-within:ring-primary/50 absolute inset-0 ring-2 ring-transparent transition-all duration-150 focus-within:ring-offset-1"
+								></div>
+							{/if}
+
+							<!-- Selection border indicator -->
+							{#if isMySelection}
+								<div
+									class="border-primary/40 pointer-events-none absolute inset-0 rounded-sm border-2"
+								></div>
 							{/if}
 						</div>
 					{/each}
@@ -349,7 +552,15 @@
 				</Tabs.List>
 				<Tabs.Content value="mutual" class="pt-4">
 					<h3 class="font-semibold">Best Times to Meet</h3>
-					<p class="text-muted-foreground text-sm">Times when everyone is available.</p>
+					<p class="text-muted-foreground text-sm">
+						{#if maxParticipantsForBestTimes() > 0}
+							Times that work for {maxParticipantsForBestTimes()} out of {Object.keys(
+								event.participants
+							).length} participants.
+						{:else}
+							Times that work for the most participants.
+						{/if}
+					</p>
 					<div class="mt-4 space-y-2">
 						{#if mutualSlots().length > 0}
 							{#each mutualSlots() as slot}
@@ -358,11 +569,16 @@
 								>
 									<strong>{format(parseISO(slot.start), 'EEE, MMM d')}</strong>:
 									{format(parseISO(slot.start), 'h:mm a')} - {format(parseISO(slot.end), 'h:mm a')}
+									{#if maxParticipantsForBestTimes() > 0}
+										<span class="text-xs opacity-75"
+											>({maxParticipantsForBestTimes()} participants)</span
+										>
+									{/if}
 								</div>
 							{/each}
 						{:else}
 							<p class="text-muted-foreground text-sm">
-								No overlapping times found for all participants yet.
+								No overlapping times found yet. Add your availability to see the best options.
 							</p>
 						{/if}
 					</div>

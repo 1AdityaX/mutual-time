@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { Button } from '$lib/components/ui/button/index.js';
+	import { buttonVariants } from '$lib/components/ui/button/index.js';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import { ChevronDown, Calendar } from '@lucide/svelte/icons';
+	import { cn } from '$lib/utils.js';
 	import type { UserEvent } from '$lib/server/database';
 
 	let { userEvents, currentCode } = $props<{
@@ -18,11 +19,11 @@
 {#if userEvents.length > 0}
 	<DropdownMenu.Root>
 		<DropdownMenu.Trigger>
-			<Button variant="outline" class="flex items-center gap-2">
+			<div class={cn(buttonVariants({ variant: 'outline' }), 'flex items-center gap-2')}>
 				<Calendar class="h-4 w-4" />
 				<span>My Events</span>
 				<ChevronDown class="h-4 w-4" />
-			</Button>
+			</div>
 		</DropdownMenu.Trigger>
 		<DropdownMenu.Content>
 			<DropdownMenu.Label>Switch to Event</DropdownMenu.Label>
