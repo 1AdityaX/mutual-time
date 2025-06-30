@@ -94,70 +94,86 @@
 		return map;
 	});
 
-	// THE CORE LOGIC: Calculate best possible meeting times
+	// Helper to find all intervals with the max number of participants, merging consecutive ones
+	function findMaxMutualIntervals(
+		participants: Record<string, TimeSlot[]>
+	): { start: string; end: string; users: string[] }[] {
+		// 1. Collect all unique boundaries
+		const boundaries = new Set<string>();
+		for (const slots of Object.values(participants)) {
+			for (const slot of slots) {
+				boundaries.add(slot.start);
+				boundaries.add(slot.end);
+			}
+		}
+		const sorted = Array.from(boundaries).sort();
+
+		// 2. Build intervals between boundaries
+		const intervals: { start: string; end: string; users: string[] }[] = [];
+		for (let i = 0; i < sorted.length - 1; i++) {
+			const start = sorted[i];
+			const end = sorted[i + 1];
+			// 3. Find which users are available in this interval
+			const users: string[] = [];
+			for (const [name, slots] of Object.entries(participants)) {
+				if (slots.some((slot: TimeSlot) => slot.start <= start && slot.end >= end)) {
+					users.push(name);
+				}
+			}
+			intervals.push({ start, end, users });
+		}
+
+		// 4. Find max count
+		const maxCount = Math.max(...intervals.map((i) => i.users.length), 0);
+
+		// 5. Merge consecutive intervals with max count and same users
+		const result: { start: string; end: string; users: string[] }[] = [];
+		let current: { start: string; end: string; users: string[] } | null = null;
+		for (const interval of intervals) {
+			if (interval.users.length === maxCount && maxCount > 0) {
+				if (
+					current &&
+					current.end === interval.start &&
+					JSON.stringify([...current.users].sort()) === JSON.stringify([...interval.users].sort())
+				) {
+					current.end = interval.end;
+				} else {
+					if (current) result.push(current);
+					current = { start: interval.start, end: interval.end, users: [...interval.users] };
+				}
+			} else {
+				if (current) {
+					result.push(current);
+					current = null;
+				}
+			}
+		}
+		if (current) result.push(current);
+
+		return result;
+	}
+
+	// THE CORE LOGIC: Calculate best possible meeting times (mutual slots)
 	const mutualSlots = $derived(() => {
 		const participantCount = Object.keys(event.participants).length;
-
-		// If no participants, return empty array
 		if (participantCount === 0) return [];
-
-		// If only one participant, show their individual availability
 		if (participantCount === 1) {
 			const singleParticipant = Object.values(event.participants)[0];
-			return singleParticipant || [];
+			return (singleParticipant || []).map((slot) => ({
+				...slot,
+				users: [Object.keys(event.participants)[0]]
+			}));
 		}
-
-		// Calculate availability counts for each time slot
-		const availabilityCounts = new Map<string, number>();
-		for (const name in event.participants) {
-			event.participants[name].forEach((slot) => {
-				let current = parseISO(slot.start);
-				const end = parseISO(slot.end);
-				while (current < end) {
-					const iso = current.toISOString();
-					availabilityCounts.set(iso, (availabilityCounts.get(iso) || 0) + 1);
-					current = addMinutes(current, timeInterval);
-				}
-			});
-		}
-
-		// Find the maximum number of participants available at any time
-		const maxParticipants = Math.max(...availabilityCounts.values(), 0);
-
-		// If no one is available, return empty array
-		if (maxParticipants === 0) return [];
-
-		// Find all time slots where the maximum number of participants are available
-		const bestTimeISOs = [...availabilityCounts.entries()]
-			.filter(([, count]) => count === maxParticipants)
-			.map(([iso]) => iso)
-			.sort();
-
-		// Group consecutive slots
-		return groupConsecutiveSlots(bestTimeISOs, timeInterval);
+		return findMaxMutualIntervals(event.participants);
 	});
 
 	// Calculate the maximum number of participants available for the best times
 	const maxParticipantsForBestTimes = $derived(() => {
-		const participantCount = Object.keys(event.participants).length;
-		if (participantCount === 0) return 0;
-		if (participantCount === 1) return 1;
-
-		// Calculate availability counts for each time slot
-		const availabilityCounts = new Map<string, number>();
-		for (const name in event.participants) {
-			event.participants[name].forEach((slot) => {
-				let current = parseISO(slot.start);
-				const end = parseISO(slot.end);
-				while (current < end) {
-					const iso = current.toISOString();
-					availabilityCounts.set(iso, (availabilityCounts.get(iso) || 0) + 1);
-					current = addMinutes(current, timeInterval);
-				}
-			});
+		if (!mutualSlots() || mutualSlots().length === 0) {
+			return 0;
 		}
-
-		return Math.max(...availabilityCounts.values(), 0);
+		// All slots in mutualSlots have the same number of users.
+		return mutualSlots()[0].users.length;
 	});
 
 	// --- SIMPLIFIED SELECTION HANDLERS ---
@@ -564,17 +580,41 @@
 					<div class="mt-4 space-y-2">
 						{#if mutualSlots().length > 0}
 							{#each mutualSlots() as slot}
-								<div
-									class="rounded-md bg-green-100 p-2 text-sm text-green-900 dark:bg-green-900/50 dark:text-green-200"
-								>
-									<strong>{format(parseISO(slot.start), 'EEE, MMM d')}</strong>:
-									{format(parseISO(slot.start), 'h:mm a')} - {format(parseISO(slot.end), 'h:mm a')}
-									{#if maxParticipantsForBestTimes() > 0}
-										<span class="text-xs opacity-75"
-											>({maxParticipantsForBestTimes()} participants)</span
-										>
-									{/if}
-								</div>
+								<details class="group rounded-md bg-green-100 dark:bg-green-900/50">
+									<summary
+										class="flex cursor-pointer list-none items-center justify-between p-2 text-sm text-green-900 transition-colors hover:bg-green-200/50 dark:text-green-200 dark:hover:bg-green-900"
+									>
+										<div>
+											<strong>{format(parseISO(slot.start), 'EEE, MMM d')}</strong>:
+											{format(parseISO(slot.start), 'h:mm a')} -
+											{format(parseISO(slot.end), 'h:mm a')}
+											{#if slot.users.length > 0}
+												<span class="text-xs opacity-75"> ({slot.users.length} participants)</span>
+											{/if}
+										</div>
+										<span class="transform transition-transform duration-200 group-open:rotate-90">
+											<svg
+												class="h-4 w-4"
+												xmlns="http://www.w3.org/2000/svg"
+												viewBox="0 0 20 20"
+												fill="currentColor"
+											>
+												<path
+													fill-rule="evenodd"
+													d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z"
+													clip-rule="evenodd"
+												/>
+											</svg>
+										</span>
+									</summary>
+									<div class="border-t border-green-200/50 p-3 dark:border-green-800/60">
+										<ul class="list-disc space-y-1 pl-5 text-xs text-green-800 dark:text-green-300">
+											{#each slot.users as user}
+												<li>{user}</li>
+											{/each}
+										</ul>
+									</div>
+								</details>
 							{/each}
 						{:else}
 							<p class="text-muted-foreground text-sm">
